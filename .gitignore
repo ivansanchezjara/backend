@@ -1,0 +1,30 @@
+# --- Python / Django ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+ENV/
+
+# --- Base de Datos Local ---
+# Es mejor no subir la base de datos para evitar conflictos
+db.sqlite3
+db.sqlite3-journal
+
+# --- Archivos de Medios y Estáticos ---
+# Aquí es donde Django guarda las fotos que subes de los productos
+media/
+static/
+staticfiles/
+
+# --- Entorno y Secretos ---
+.env
+.venv
+pip-log.txt
+
+# --- Editores de Código ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
