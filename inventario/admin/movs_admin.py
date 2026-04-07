@@ -58,40 +58,85 @@ class ItemDevolucionProvisoriaInline(admin.TabularInline):
 
 @admin.register(IngresoMercaderia)
 class IngresoMercaderiaAdmin(admin.ModelAdmin):
-    list_display = ('fecha_arribo', 'descripcion',
-                    'deposito', 'comprobante', 'usuario')
-    list_filter = ('deposito', 'fecha_arribo')
+    # 🚀 Añadimos 'estado' a la vista principal
+    list_display = ('id', 'fecha_arribo', 'descripcion',
+                    'deposito', 'estado', 'procesado', 'usuario')
+    list_filter = ('estado', 'procesado', 'deposito', 'fecha_arribo')
     inlines = [ItemIngresoInline]
     date_hierarchy = 'fecha_arribo'
-    readonly_fields = ('usuario',)
+
+    # El usuario se autocompleta y no se toca
+    readonly_fields = ('usuario', 'procesado')
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+
+        # 1. Si el ingreso ya está APROBADO, bloqueamos TODO para todos (integridad de datos)
+        if obj and obj.estado == 'APROBADO':
+            return [f.name for f in self.model._meta.fields]
+
+        # 2. Si es BORRADOR y el usuario NO es superusuario (tu papá), bloqueamos el campo 'estado'
+        if obj and not request.user.is_superuser:
+            fields.append('estado')
+
+        return tuple(fields)
 
     def save_model(self, request, obj, form, change):
         if not obj.pk:
             obj.usuario = request.user
         super().save_model(request, obj, form, change)
 
-    def has_change_permission(
-        self, request, obj=None): return False if obj else True
+    def has_change_permission(self, request, obj=None):
+        # Si el objeto ya está aprobado, nadie lo toca (solo lectura final)
+        if obj and obj.estado == 'APROBADO':
+            return False
+        # Si es borrador, permitimos cambios (según los readonly_fields definidos arriba)
+        return True
 
-    def has_delete_permission(self, request, obj=None): return False
+    def has_delete_permission(self, request, obj=None):
+        # Solo permitimos borrar si es un Borrador y el usuario es admin
+        if obj and obj.estado == 'BORRADOR' and request.user.is_superuser:
+            return True
+        return False
 
 
 @admin.register(BajaInventario)
 class BajaInventarioAdmin(admin.ModelAdmin):
-    list_display = ('fecha', 'lote', 'cantidad', 'motivo', 'usuario')
-    list_filter = ('motivo', 'fecha', 'usuario')
+    list_display = ('id', 'fecha', 'lote', 'cantidad',
+                    'motivo', 'estado', 'procesado', 'usuario')
+    list_filter = ('estado', 'procesado', 'motivo', 'fecha', 'usuario')
     autocomplete_fields = ['lote']
-    readonly_fields = ('usuario',)
+    readonly_fields = ('usuario', 'procesado')
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+
+        # 1. Si la baja ya fue APROBADA, bloqueamos todo. Es un registro histórico inmutable.
+        if obj and obj.estado == 'APROBADO':
+            return [f.name for f in self.model._meta.fields]
+
+        # 2. Si es BORRADOR y no es superusuario (tu papá), no puede cambiar el estado.
+        if obj and not request.user.is_superuser:
+            fields.append('estado')
+
+        return tuple(fields)
 
     def save_model(self, request, obj, form, change):
         if not obj.pk:
             obj.usuario = request.user
         super().save_model(request, obj, form, change)
 
-    def has_change_permission(
-        self, request, obj=None): return False if obj else True
+    def has_change_permission(self, request, obj=None):
+        # Permitimos editar solo si no ha sido aprobada aún
+        if obj and obj.estado == 'APROBADO':
+            return False
+        return True
 
-    def has_delete_permission(self, request, obj=None): return False
+    def has_delete_permission(self, request, obj=None):
+        # Solo el admin puede borrar borradores si se equivocaron feo
+        if obj and obj.estado == 'BORRADOR' and request.user.is_superuser:
+            return True
+        return False
 
 
 @admin.register(TransferenciaInterna)
@@ -117,21 +162,64 @@ class TransferenciaInternaAdmin(admin.ModelAdmin):
 
 @admin.register(AjusteComercial)
 class AjusteComercialAdmin(admin.ModelAdmin):
-    list_display = ('fecha', 'variante', 'motivo', 'costo_fob_anterior',
-                    'nuevo_costo_fob', 'precio_0_anterior', 'nuevo_precio_0', 'usuario')
-    list_filter = ('fecha', 'motivo', 'usuario')
-    autocomplete_fields = ['variante']
-    readonly_fields = ('costo_fob_anterior', 'precio_0_anterior', 'usuario')
+    # 1. Configuración de la lista principal
+    list_display = ('id', 'variante', 'fecha', 'motivo',
+                    'estado', 'procesado', 'nuevo_precio_0', 'usuario')
+    list_filter = ('estado', 'procesado', 'motivo', 'fecha')
+    search_fields = ('variante__product_code',
+                     'variante__producto__nombre_general', 'observaciones')
+
+    # 2. Organización del formulario por secciones
+    fieldsets = (
+        ('Información General', {
+            'fields': ('variante', 'motivo', 'estado', 'procesado', 'usuario', 'observaciones')
+        }),
+        ('Ajuste de Costos', {
+            'fields': (('nuevo_costo_fob', 'nuevo_costo_landed'),),
+            'description': 'Deja en blanco si no hay cambios en los costos.'
+        }),
+        ('Ajuste de Precios', {
+            'fields': (
+                'nuevo_precio_0',
+                'nuevo_precio_1',
+                'nuevo_precio_2',
+                'nuevo_precio_3',
+                'nuevo_precio_4'
+            ),
+        }),
+        ('Auditoría Histórica', {
+            'fields': (('costo_fob_ant', 'precio_0_ant'),),
+            'classes': ('collapse',),  # Esta sección sale cerrada por defecto
+        }),
+    )
+
+    readonly_fields = ('usuario', 'procesado', 'costo_fob_ant', 'precio_0_ant')
+
+    def get_readonly_fields(self, request, obj=None):
+        # Si ya está APROBADO, bloqueamos absolutamente todo (Inmutable)
+        if obj and obj.estado == 'APROBADO':
+            return [f.name for f in self.model._meta.fields]
+
+        # Si es BORRADOR, solo tu papá (superuser) puede ver el campo 'estado' para aprobar
+        readonly = list(super().get_readonly_fields(request, obj))
+        if obj and not request.user.is_superuser:
+            readonly.append('estado')
+        return tuple(readonly)
 
     def save_model(self, request, obj, form, change):
-        if not obj.pk:
+        # Al guardar el registro por primera vez, capturamos los precios actuales
+        # para que tu papá vea el "antes" y el "después" en la auditoría.
+        if not change:
             obj.usuario = request.user
+            obj.costo_fob_ant = obj.variante.costo_fob
+            obj.precio_0_ant = obj.variante.precio_0_publico
         super().save_model(request, obj, form, change)
 
-    def has_change_permission(
-        self, request, obj=None): return False if obj else True
-
-    def has_delete_permission(self, request, obj=None): return False
+    def has_change_permission(self, request, obj=None):
+        # Si ya está aprobado, nadie lo toca. Si es borrador, se puede editar.
+        if obj and obj.estado == 'APROBADO':
+            return False
+        return True
 
 
 @admin.register(SalidaProvisoria)

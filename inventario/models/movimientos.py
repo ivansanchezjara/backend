@@ -12,6 +12,12 @@ from .stock import Deposito, StockLote, HistorialCosto
 # 1. INGRESOS
 
 
+class EstadoMovimiento(models.TextChoices):
+    BORRADOR = 'BORRADOR', 'Borrador (Pendiente de Aprobación)'
+    APROBADO = 'APROBADO', 'Aprobado (Procesado)'
+    RECHAZADO = 'RECHAZADO', 'Rechazado'
+
+
 class IngresoMercaderia(models.Model):
     fecha_arribo = models.DateField()
     descripcion = models.CharField(max_length=255)
@@ -19,6 +25,12 @@ class IngresoMercaderia(models.Model):
     deposito = models.ForeignKey(Deposito, on_delete=models.PROTECT)
     usuario = models.ForeignKey(
         User, on_delete=models.PROTECT, null=True, blank=True)
+    estado = models.CharField(
+        max_length=20,
+        choices=EstadoMovimiento.choices,
+        default=EstadoMovimiento.BORRADOR
+    )
+    procesado = models.BooleanField(default=False, editable=False)
 
     class Meta:
         verbose_name = "Ingreso de Mercadería"
@@ -53,35 +65,48 @@ class ItemIngreso(models.Model):
         return f"{self.cantidad}u. de {self.variante.product_code}"
 
 
-@receiver(post_save, sender=ItemIngreso)
-def procesar_llegada_item(sender, instance, created, **kwargs):
-    if created:
-        lote, creado = StockLote.objects.get_or_create(
-            variante=instance.variante,
-            deposito=instance.ingreso.deposito,
-            lote_codigo=instance.lote_codigo,
-            defaults={'cantidad': 0,
-                      'costo_compra_lote': instance.costo_fob_unitario}
-        )
-        lote.cantidad += instance.cantidad
-        lote.save()
+@receiver(post_save, sender=IngresoMercaderia)
+def procesar_aprobacion_ingreso(sender, instance, created, **kwargs):
+    if not created and instance.estado == EstadoMovimiento.APROBADO and not instance.procesado:
 
-        v = instance.variante
-        v.costo_fob = instance.costo_fob_unitario
-        v.costo_landed = instance.costo_landed_unitario
-        v.precio_0_publico = instance.nuevo_precio_0_publico
-        if instance.nuevo_precio_1_estudiante is not None:
-            v.precio_1_estudiante = instance.nuevo_precio_1_estudiante
-        if instance.nuevo_precio_2_reventa is not None:
-            v.precio_2_reventa = instance.nuevo_precio_2_reventa
-        if instance.nuevo_precio_3_mayorista is not None:
-            v.precio_3_mayorista = instance.nuevo_precio_3_mayorista
-        if instance.nuevo_precio_4_intercompany is not None:
-            v.precio_4_intercompany = instance.nuevo_precio_4_intercompany
-        v.save()
+        for item in instance.items.all():
+            # 1. Sumar al Stock
+            lote, creado = StockLote.objects.get_or_create(
+                variante=item.variante,
+                deposito=instance.deposito,
+                lote_codigo=item.lote_codigo,
+                defaults={'cantidad': 0,
+                          'costo_compra_lote': item.costo_fob_unitario}
+            )
+            lote.cantidad += item.cantidad
+            lote.save()
 
-        HistorialCosto.objects.create(
-            variante=v, costo_fob=instance.costo_fob_unitario, lote_referencia=instance.lote_codigo)
+            # 2. Actualizar Precios y Costos en la Variante
+            v = item.variante
+            v.costo_fob = item.costo_fob_unitario
+            v.costo_landed = item.costo_landed_unitario
+            v.precio_0_publico = item.nuevo_precio_0_publico
+            if item.nuevo_precio_1_estudiante is not None:
+                v.precio_1_estudiante = item.nuevo_precio_1_estudiante
+            if item.nuevo_precio_2_reventa is not None:
+                v.precio_2_reventa = item.nuevo_precio_2_reventa
+            if item.nuevo_precio_3_mayorista is not None:
+                v.precio_3_mayorista = item.nuevo_precio_3_mayorista
+            if item.nuevo_precio_4_intercompany is not None:
+                v.precio_4_intercompany = item.nuevo_precio_4_intercompany
+            v.save()
+
+            # 3. Guardar Historial
+            HistorialCosto.objects.create(
+                variante=v,
+                costo_fob=item.costo_fob_unitario,
+                lote_referencia=item.lote_codigo
+            )
+
+        # 4. Marcar como procesado (usamos update para evitar disparar la señal de nuevo)
+        IngresoMercaderia.objects.filter(pk=instance.pk).update(procesado=True)
+        instance.procesado = True
+
 
 # 2. BAJAS
 
@@ -102,6 +127,12 @@ class BajaInventario(models.Model):
     observaciones = models.CharField(max_length=255, blank=True)
     usuario = models.ForeignKey(
         User, on_delete=models.PROTECT, null=True, blank=True)
+    estado = models.CharField(
+        max_length=20,
+        choices=EstadoMovimiento.choices,
+        default=EstadoMovimiento.BORRADOR
+    )
+    procesado = models.BooleanField(default=False, editable=False)
 
     class Meta:
         verbose_name = "Baja de Inventario"
@@ -112,12 +143,15 @@ class BajaInventario(models.Model):
 
 
 @receiver(post_save, sender=BajaInventario)
-def procesar_baja_inventario(sender, instance, created, **kwargs):
-    if created:
+def procesar_aprobacion_baja(sender, instance, created, **kwargs):
+    if not created and instance.estado == EstadoMovimiento.APROBADO and not instance.procesado:
         instance.lote.cantidad -= instance.cantidad
         instance.lote.save()
+        
+        BajaInventario.objects.filter(pk=instance.pk).update(procesado=True)
+        instance.procesado = True
 
-# 3. TRANSFERENCIAS
+# 3. TRANSFERENCIAS Internas
 
 
 class TransferenciaInterna(models.Model):
@@ -176,45 +210,77 @@ class AjusteComercial(models.Model):
         Variante, on_delete=models.CASCADE, related_name="ajustes_comerciales")
     fecha = models.DateTimeField(auto_now_add=True)
     motivo = models.CharField(max_length=20, choices=MotivoAjuste.choices)
+    estado = models.CharField(
+        max_length=20, choices=EstadoMovimiento.choices, default=EstadoMovimiento.BORRADOR)
     observaciones = models.CharField(max_length=255, blank=True)
-    costo_fob_anterior = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True)
-    precio_0_anterior = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True)
-    nuevo_costo_fob = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True)
-    nuevo_precio_0 = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True)
     usuario = models.ForeignKey(
         User, on_delete=models.PROTECT, null=True, blank=True)
+    procesado = models.BooleanField(default=False, editable=False)
+
+    # --- COSTOS ---
+    nuevo_costo_fob = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    nuevo_costo_landed = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+
+    # --- PRECIOS ---
+    nuevo_precio_0 = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    nuevo_precio_1 = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    nuevo_precio_2 = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    nuevo_precio_3 = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    nuevo_precio_4 = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+
+    # Campos para auditoría (se llenan solos al aprobar)
+    costo_fob_ant = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    precio_0_ant = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
 
     class Meta:
         verbose_name = "Ajuste Comercial"
         verbose_name_plural = "Ajustes Comerciales"
 
-    def clean(self):
-        if self.nuevo_costo_fob is None and self.nuevo_precio_0 is None:
-            raise ValidationError("Ingresar costo o precio nuevo.")
-
-    def __str__(self):
-        return f"Ajuste {self.id} | {self.variante.product_code} ({self.get_motivo_display()})"
-
 
 @receiver(post_save, sender=AjusteComercial)
 def aplicar_ajuste_comercial(sender, instance, created, **kwargs):
-    if created:
+    # Solo disparamos la lógica cuando el estado pasa a APROBADO
+    if not created and instance.estado == EstadoMovimiento.APROBADO and not instance.procesado:
         v = instance.variante
-        if instance.nuevo_costo_fob is not None:
-            AjusteComercial.objects.filter(pk=instance.pk).update(
-                costo_fob_anterior=v.costo_fob)
+
+        # --- Actualización de Costos ---
+        if instance.nuevo_costo_fob:
             v.costo_fob = instance.nuevo_costo_fob
-            HistorialCosto.objects.create(variante=v, costo_fob=instance.nuevo_costo_fob,
-                                          lote_referencia=f"Ajuste: {instance.get_motivo_display()}")
-        if instance.nuevo_precio_0 is not None:
-            AjusteComercial.objects.filter(pk=instance.pk).update(
-                precio_0_anterior=v.precio_0_publico)
+            # Registramos en el historial para ver la evolución del costo
+            HistorialCosto.objects.create(
+                variante=v,
+                costo_fob=instance.nuevo_costo_fob,
+                lote_referencia=f"Ajuste ID {instance.id}"
+            )
+
+        if instance.nuevo_costo_landed:
+            v.costo_landed = instance.nuevo_costo_landed
+
+        # --- Actualización de Precios (0 al 4) ---
+        if instance.nuevo_precio_0:
             v.precio_0_publico = instance.nuevo_precio_0
+        if instance.nuevo_precio_1:
+            v.precio_1_estudiante = instance.nuevo_precio_1
+        if instance.nuevo_precio_2:
+            v.precio_2_reventa = instance.nuevo_precio_2
+        if instance.nuevo_precio_3:
+            v.precio_3_mayorista = instance.nuevo_precio_3
+        if instance.nuevo_precio_4:
+            v.precio_4_intercompany = instance.nuevo_precio_4
+
         v.save()
+        
+        AjusteComercial.objects.filter(pk=instance.pk).update(procesado=True)
+        instance.procesado = True
 
 # 5. SALIDAS Y DEVOLUCIONES PROVISORIAS
 
