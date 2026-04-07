@@ -18,13 +18,18 @@ class ImagenProductoSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if obj.imagen_asset:
             url = obj.imagen_asset.url
-            # build_absolute_uri asegura que Next.js reciba http://tuservidor.com/media/...
             if request is not None:
                 return request.build_absolute_uri(url)
             return url
         return None
 
 # --- 2. CATÁLOGO ---
+
+
+class CategoriaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Categoria
+        fields = '__all__'
 
 
 class VarianteSerializer(serializers.ModelSerializer):
@@ -50,7 +55,7 @@ class VarianteSerializer(serializers.ModelSerializer):
 
 
 class ProductoSerializer(serializers.ModelSerializer):
-    categoria_nombre = serializers.ReadOnlyField(source='categoria.nombre')
+    categoria = CategoriaSerializer(read_only=True)
     variants = VarianteSerializer(many=True, read_only=True)
     imagen_principal_url = serializers.SerializerMethodField()
 
@@ -58,7 +63,7 @@ class ProductoSerializer(serializers.ModelSerializer):
         model = Producto
         fields = [
             'id', 'nombre_general', 'general_code', 'brand', 'slug',
-            'description', 'long_description', 'categoria_nombre', 'variants',
+            'description', 'long_description', 'categoria', 'variants',
             'imagen_principal_url', 'featured', 'tags'
         ]
 
@@ -71,7 +76,21 @@ class ProductoSerializer(serializers.ModelSerializer):
             return url
         return None
 
-# --- 4. MOVIMIENTOS (Panel Next.js) ---
+# --- 3. MOVIMIENTOS (ORGANIZADO DE HIJO A PADRE) ---
+
+# Primero el ítem (El hijo)
+
+
+class ItemSalidaSerializer(serializers.ModelSerializer):
+    producto = serializers.ReadOnlyField(
+        source='lote.variante.producto_padre.nombre_general')
+    codigo = serializers.ReadOnlyField(source='lote.variante.product_code')
+
+    class Meta:
+        model = ItemSalidaProvisoria
+        fields = ['id', 'producto', 'codigo', 'cantidad']
+
+# Luego la salida (El padre que usa al hijo)
 
 
 class SalidaProvisoriaSerializer(serializers.ModelSerializer):
@@ -86,24 +105,12 @@ class SalidaProvisoriaSerializer(serializers.ModelSerializer):
         ]
 
     def get_resumen_stock(self, obj):
-        # 1. Total que salió originalmente
-        total_salido = obj.items.aggregate(
-            total=Sum('cantidad')
-        )['total'] or 0
-
-        # 2. Total que ya regresó al depósito
-        # Usamos la relación 'devoluciones' definida en el modelo
+        total_salido = obj.items.aggregate(total=Sum('cantidad'))['total'] or 0
         total_devuelto = obj.devoluciones.aggregate(
-            total=Sum('items__cantidad_devuelta')
-        )['total'] or 0
-
-        # 3. Total que ya se vendió/liquidó
-        # Usamos la relación 'liquidaciones' definida en el modelo
+            total=Sum('items__cantidad_devuelta'))['total'] or 0
         total_liquidado = obj.liquidaciones.aggregate(
-            total=Sum('items__cantidad_liquidada')
-        )['total'] or 0
+            total=Sum('items__cantidad_liquidada'))['total'] or 0
 
-        # 4. Cálculo final para Next.js
         pendientes = total_salido - (total_devuelto + total_liquidado)
 
         return {

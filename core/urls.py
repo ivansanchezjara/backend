@@ -2,12 +2,16 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.views.generic import RedirectView  # <--- NUEVO IMPORT
 
 # 1. IMPORTAMOS TU NUEVA VISTA Y EL REFRESH NORMAL
 from .views import MyTokenObtainPairView
 from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
+    # 0. REDIRECCIÓN DE LA RAÍZ AL ADMIN
+    path('', RedirectView.as_view(url='/admin/', permanent=False)),
+
     path('admin/', admin.site.admin_urls if hasattr(admin.site,
          'admin_urls') else admin.site.urls),
 

@@ -26,7 +26,7 @@ class StockLoteAdmin(admin.ModelAdmin):
 @admin.register(HistorialCosto)
 class HistorialCostoAdmin(admin.ModelAdmin):
     list_display = ('variante', 'costo_fob', 'fecha', 'lote_referencia')
-    list_filter = ('fecha', 'variante__producto__brand')
+    list_filter = ('fecha', 'variante__producto_padre__brand')
     # El historial siempre debe ser solo lectura
     def has_add_permission(self, request): return False
     def has_change_permission(self, request, obj=None): return False

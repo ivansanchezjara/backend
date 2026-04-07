@@ -49,10 +49,11 @@ class VarianteInline(admin.StackedInline):
 class ProductoAdmin(admin.ModelAdmin):
 
     list_display = ('ver_foto', 'nombre_general', 'general_code',
-                    'brand', 'categoria', 'featured', 'total_stock')
+                    'brand', 'categoria', 'featured', 'is_published', 'total_stock')
     search_fields = ('nombre_general', 'general_code', 'brand')
-    list_filter = ('brand', 'categoria', 'featured')
+    list_filter = ('brand', 'categoria', 'featured', 'is_published')
     prepopulated_fields = {'slug': ('nombre_general',)}
+    list_editable = ('is_published',)
     inlines = [VarianteInline]
 
     # 1. Función para mostrar la miniatura de la imagen

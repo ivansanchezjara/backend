@@ -30,7 +30,7 @@ class StockLote(models.Model):
         verbose_name_plural = "Existencias por Lote"
         constraints = [
             models.CheckConstraint(
-                check=models.Q(cantidad__gte=0),
+                condition=models.Q(cantidad__gte=0),
                 name='stock_lote_cantidad_no_negativa'
             )
         ]

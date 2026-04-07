@@ -93,14 +93,26 @@ class IngresoMercaderiaAdmin(admin.ModelAdmin):
     # --- Lógica de Permisos y Campos (Tu estructura mejorada) ---
 
     def get_readonly_fields(self, request, obj=None):
+        # 1. Obtenemos los campos que ya definiste como readonly arriba
         fields = list(super().get_readonly_fields(request, obj))
-        if obj and obj.estado == 'APROBADO':
-            return [f.name for f in self.model._meta.fields]
 
-        # Bloqueamos el estado para compras (solo tu papá/admin puede aprobar)
-        if obj and not request.user.is_superuser:
+        # 2. Si el objeto NO existe (estamos CREANDO el ingreso)
+        if obj is None:
+            # Bloqueamos el estado para que nazca como BORRADOR sí o sí
             if 'estado' not in fields:
                 fields.append('estado')
+            return tuple(fields)
+
+        # 3. Si ya está APROBADO, bloqueamos absolutamente todo (Inmutable)
+        if obj.estado == 'APROBADO':
+            return [f.name for f in self.model._meta.fields]
+
+        # 4. Si es BORRADOR y estamos EDITANDO:
+        # Solo los superusers (vos y tu papá) pueden ver el campo para aprobar
+        if not request.user.is_superuser:
+            if 'estado' not in fields:
+                fields.append('estado')
+
         return tuple(fields)
 
     def save_model(self, request, obj, form, change):
@@ -137,15 +149,25 @@ class BajaInventarioAdmin(admin.ModelAdmin):
     readonly_fields = ('usuario', 'procesado')
 
     def get_readonly_fields(self, request, obj=None):
+        # 1. Obtenemos los campos que ya definiste como readonly arriba
         fields = list(super().get_readonly_fields(request, obj))
 
-        # 1. Si la baja ya fue APROBADA, bloqueamos todo. Es un registro histórico inmutable.
-        if obj and obj.estado == 'APROBADO':
+        # 2. Si el objeto NO existe (estamos CREANDO el ingreso)
+        if obj is None:
+            # Bloqueamos el estado para que nazca como BORRADOR sí o sí
+            if 'estado' not in fields:
+                fields.append('estado')
+            return tuple(fields)
+
+        # 3. Si ya está APROBADO, bloqueamos absolutamente todo (Inmutable)
+        if obj.estado == 'APROBADO':
             return [f.name for f in self.model._meta.fields]
 
-        # 2. Si es BORRADOR y no es superusuario (tu papá), no puede cambiar el estado.
-        if obj and not request.user.is_superuser:
-            fields.append('estado')
+        # 4. Si es BORRADOR y estamos EDITANDO:
+        # Solo los superusers (vos y tu papá) pueden ver el campo para aprobar
+        if not request.user.is_superuser:
+            if 'estado' not in fields:
+                fields.append('estado')
 
         return tuple(fields)
 
@@ -224,14 +246,23 @@ class AjusteComercialAdmin(admin.ModelAdmin):
     readonly_fields = ('usuario', 'procesado', 'costo_fob_ant', 'precio_0_ant')
 
     def get_readonly_fields(self, request, obj=None):
-        # Si ya está APROBADO, bloqueamos absolutamente todo (Inmutable)
-        if obj and obj.estado == 'APROBADO':
+        # 1. Si el registro NO existe todavía (estamos en el formulario de "Añadir")
+        if obj is None:
+            # Forzamos que 'estado' sea de solo lectura para TODOS al crear.
+            # Así nace sí o sí como BORRADOR (por el default del modelo).
+            return ('estado', 'procesado', 'costo_fob_ant', 'precio_0_ant')
+
+        # 2. Si ya está APROBADO, bloqueamos todo (Inmutable)
+        if obj.estado == 'APROBADO':
             return [f.name for f in self.model._meta.fields]
 
-        # Si es BORRADOR, solo tu papá (superuser) puede ver el campo 'estado' para aprobar
+        # 3. Si es BORRADOR y estamos EDITANDO:
         readonly = list(super().get_readonly_fields(request, obj))
-        if obj and not request.user.is_superuser:
+
+        # Solo los superusers (vos y tu papá) pueden ver el campo para aprobar
+        if not request.user.is_superuser:
             readonly.append('estado')
+
         return tuple(readonly)
 
     def save_model(self, request, obj, form, change):
@@ -248,6 +279,14 @@ class AjusteComercialAdmin(admin.ModelAdmin):
         if obj and obj.estado == 'APROBADO':
             return False
         return True
+
+    def has_delete_permission(self, request, obj=None):
+        # Si el ajuste ya fue APROBADO, nadie puede borrarlo (ni vos ni tu papá)
+        if obj and obj.estado == 'APROBADO':
+            return False
+
+        # Si es BORRADOR, permitimos borrar solo a los superusers
+        return request.user.is_superuser
 
 
 @admin.register(SalidaProvisoria)

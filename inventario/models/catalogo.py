@@ -30,6 +30,11 @@ class Producto(models.Model):
     long_description = models.TextField()
     featured = models.BooleanField(default=False)
     tags = models.JSONField(default=list, blank=True)
+    is_published = models.BooleanField(
+        default=False,
+        verbose_name="Publicado en Web",
+        help_text="Si está marcado, el producto será visible en la página online."
+    )
 
     class Meta:
         verbose_name = "Producto"
