@@ -18,7 +18,7 @@ class StockLote(models.Model):
         Variante, on_delete=models.CASCADE, related_name="existencias")
     deposito = models.ForeignKey(Deposito, on_delete=models.PROTECT)
     lote_codigo = models.CharField(max_length=100)
-    cantidad = models.PositiveIntegerField(default=0)
+    cantidad = models.IntegerField(default=0)
     vencimiento = models.DateField(null=True, blank=True)
     qr_code = models.CharField(max_length=255, null=True, blank=True)
     costo_compra_lote = models.DecimalField(max_digits=12, decimal_places=2)
@@ -28,6 +28,12 @@ class StockLote(models.Model):
         unique_together = ('variante', 'deposito', 'lote_codigo')
         verbose_name = "Lote de Stock"
         verbose_name_plural = "Existencias por Lote"
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(cantidad__gte=0),
+                name='stock_lote_cantidad_no_negativa'
+            )
+        ]
 
     def __str__(self):
         return f"{self.variante.product_code} | Lote: {self.lote_codigo}"

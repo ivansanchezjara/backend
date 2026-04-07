@@ -1,3 +1,5 @@
+from django.db.models import Sum, F
+from django.utils.html import format_html
 from django.contrib import admin
 from django.db.models import Sum
 
@@ -58,27 +60,47 @@ class ItemDevolucionProvisoriaInline(admin.TabularInline):
 
 @admin.register(IngresoMercaderia)
 class IngresoMercaderiaAdmin(admin.ModelAdmin):
-    # 🚀 Añadimos 'estado' a la vista principal
-    list_display = ('id', 'fecha_arribo', 'descripcion',
-                    'deposito', 'estado', 'procesado', 'usuario')
+    # 1. Agregamos visualización de totales en la lista principal
+    list_display = ('id', 'fecha_arribo', 'descripcion', 'deposito',
+                    'ver_estado', 'valor_fob_total', 'procesado', 'usuario')
     list_filter = ('estado', 'procesado', 'deposito', 'fecha_arribo')
     inlines = [ItemIngresoInline]
     date_hierarchy = 'fecha_arribo'
-
-    # El usuario se autocompleta y no se toca
     readonly_fields = ('usuario', 'procesado')
+
+    # --- Mejoras de Visualización ---
+
+    def ver_estado(self, obj):
+        colors = {
+            'BORRADOR': '#6c757d',  # Gris
+            'APROBADO': '#28a745',  # Verde
+            'RECHAZADO': '#dc3545',  # Rojo
+        }
+        return format_html(
+            '<span style="color: white; background-color: {}; padding: 3px 10px; border-radius: 10px; font-weight: bold;">{}</span>',
+            colors.get(obj.estado, '#000'), obj.get_estado_display()
+        )
+    ver_estado.short_description = 'Estado'
+
+    def valor_fob_total(self, obj):
+        # Calcula la suma de (cantidad * costo_fob) de todos sus items
+        total = obj.items.aggregate(
+            total=Sum(F('cantidad') * F('costo_fob_unitario'))
+        )['total'] or 0
+        return f"USD {total:,.2f}"
+    valor_fob_total.short_description = 'Total FOB'
+
+    # --- Lógica de Permisos y Campos (Tu estructura mejorada) ---
 
     def get_readonly_fields(self, request, obj=None):
         fields = list(super().get_readonly_fields(request, obj))
-
-        # 1. Si el ingreso ya está APROBADO, bloqueamos TODO para todos (integridad de datos)
         if obj and obj.estado == 'APROBADO':
             return [f.name for f in self.model._meta.fields]
 
-        # 2. Si es BORRADOR y el usuario NO es superusuario (tu papá), bloqueamos el campo 'estado'
+        # Bloqueamos el estado para compras (solo tu papá/admin puede aprobar)
         if obj and not request.user.is_superuser:
-            fields.append('estado')
-
+            if 'estado' not in fields:
+                fields.append('estado')
         return tuple(fields)
 
     def save_model(self, request, obj, form, change):
@@ -87,17 +109,23 @@ class IngresoMercaderiaAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
     def has_change_permission(self, request, obj=None):
-        # Si el objeto ya está aprobado, nadie lo toca (solo lectura final)
         if obj and obj.estado == 'APROBADO':
             return False
-        # Si es borrador, permitimos cambios (según los readonly_fields definidos arriba)
         return True
 
     def has_delete_permission(self, request, obj=None):
-        # Solo permitimos borrar si es un Borrador y el usuario es admin
         if obj and obj.estado == 'BORRADOR' and request.user.is_superuser:
             return True
         return False
+
+    # 2. Bloqueo de los Inlines (Productos) cuando está Aprobado
+    def get_inline_instances(self, request, obj=None):
+        inline_instances = super().get_inline_instances(request, obj)
+        if obj and obj.estado == 'APROBADO':
+            for inline in inline_instances:
+                inline.can_delete = False
+                inline.max_num = 0  # Impide añadir nuevos items
+        return inline_instances
 
 
 @admin.register(BajaInventario)
@@ -271,19 +299,35 @@ class SalidaProvisoriaAdmin(admin.ModelAdmin):
 # --- ADMIN DE DEVOLUCIÓN (CORREGIDO MODO APPEND-ONLY) ---
 @admin.register(DevolucionSalidaProvisoria)
 class DevolucionSalidaProvisoriaAdmin(admin.ModelAdmin):
-    list_display = ('fecha_devolucion', 'salida_original',
-                    'deposito_destino', 'usuario')
+    # 1. Agregamos 'total_devuelto' para control rápido en la lista
+    list_display = ('id', 'fecha_devolucion', 'salida_original',
+                    'deposito_destino', 'total_devuelto', 'usuario')
     list_filter = ('fecha_devolucion', 'deposito_destino')
     autocomplete_fields = ['salida_original']
     inlines = [ItemDevolucionProvisoriaInline]
+
+    def total_devuelto(self, obj):
+        # Suma las cantidades devueltas en este documento
+        total = obj.items.aggregate(Sum('cantidad_devuelta'))[
+            'cantidad_devuelta__sum']
+        return total if total else 0
+    total_devuelto.short_description = 'Cant. Artículos'
 
     def save_model(self, request, obj, form, change):
         if not obj.pk:
             obj.usuario = request.user
         super().save_model(request, obj, form, change)
 
-    def has_change_permission(self, request, obj=None): return True
-    def has_delete_permission(self, request, obj=None): return False
+    # --- Bloqueo de Seguridad ---
+
+    def has_change_permission(self, request, obj=None):
+
+        if obj:
+            return False
+        return True
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     def get_readonly_fields(self, request, obj=None):
         if obj:
@@ -313,19 +357,36 @@ class ItemLiquidacionProvisoriaInline(admin.TabularInline):
 
 @admin.register(LiquidacionSalidaProvisoria)
 class LiquidacionSalidaProvisoriaAdmin(admin.ModelAdmin):
-    list_display = ('fecha_liquidacion', 'salida_original',
-                    'motivo', 'comprobante_venta', 'usuario')
+    # 1. Agregamos el total liquidado para control rápido
+    list_display = ('id', 'fecha_liquidacion', 'salida_original',
+                    'motivo', 'comprobante_venta', 'total_liquidado', 'usuario')
     list_filter = ('fecha_liquidacion', 'motivo')
     autocomplete_fields = ['salida_original']
     inlines = [ItemLiquidacionProvisoriaInline]
+
+    def total_liquidado(self, obj):
+        # Suma las cantidades vendidas/liquidadas en este documento
+        total = obj.items.aggregate(Sum('cantidad_liquidada'))[
+            'cantidad_liquidada__sum']
+        return total if total else 0
+    total_liquidado.short_description = 'Cant. Artículos'
 
     def save_model(self, request, obj, form, change):
         if not obj.pk:
             obj.usuario = request.user
         super().save_model(request, obj, form, change)
 
-    def has_change_permission(self, request, obj=None): return True
-    def has_delete_permission(self, request, obj=None): return False
+    # --- Bloqueo de Seguridad (Candado) ---
+
+    def has_change_permission(self, request, obj=None):
+        # Una vez creada la liquidación, se convierte en un registro histórico inmutable
+        if obj:
+            return False
+        return True
+
+    def has_delete_permission(self, request, obj=None):
+        # No se permite borrar liquidaciones para no perder el rastro de la venta/salida
+        return False
 
     def get_readonly_fields(self, request, obj=None):
         if obj:

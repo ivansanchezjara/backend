@@ -18,10 +18,6 @@ class ProductoViewSet(viewsets.ReadOnlyModelViewSet):
 
 # --- NUEVO: VISTA PARA LAS CATEGORÍAS ---
 class CategoriaViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    Esta vista devuelve la lista de categorías para llenar
-    los filtros y selectores en el frontend de Next.js.
-    """
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
     permission_classes = [IsAuthenticated]

@@ -1,6 +1,7 @@
 from rest_framework import serializers
+from django.db.models import Sum
 from .models.catalogo import Producto, Variante, Categoria, ImagenProducto
-from .models.stock import Deposito, StockLote, HistorialCosto
+from .models.stock import Deposito, StockLote
 from .models.movimientos import SalidaProvisoria, ItemSalidaProvisoria
 
 # --- 1. AUXILIARES (IMÁGENES) ---
@@ -14,17 +15,16 @@ class ImagenProductoSerializer(serializers.ModelSerializer):
         fields = ['id', 'url', 'descripcion', 'orden']
 
     def get_url(self, obj):
+        request = self.context.get('request')
         if obj.imagen_asset:
-            return obj.imagen_asset.url
+            url = obj.imagen_asset.url
+            # build_absolute_uri asegura que Next.js reciba http://tuservidor.com/media/...
+            if request is not None:
+                return request.build_absolute_uri(url)
+            return url
         return None
 
 # --- 2. CATÁLOGO ---
-
-
-class CategoriaSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Categoria
-        fields = '__all__'
 
 
 class VarianteSerializer(serializers.ModelSerializer):
@@ -40,13 +40,17 @@ class VarianteSerializer(serializers.ModelSerializer):
         ]
 
     def get_imagen_url(self, obj):
+        request = self.context.get('request')
         if obj.imagen_variante:
-            return obj.imagen_variante.url
+            url = obj.imagen_variante.url
+            if request is not None:
+                return request.build_absolute_uri(url)
+            return url
         return None
 
 
 class ProductoSerializer(serializers.ModelSerializer):
-    categoria = CategoriaSerializer(read_only=True)
+    categoria_nombre = serializers.ReadOnlyField(source='categoria.nombre')
     variants = VarianteSerializer(many=True, read_only=True)
     imagen_principal_url = serializers.SerializerMethodField()
 
@@ -54,60 +58,58 @@ class ProductoSerializer(serializers.ModelSerializer):
         model = Producto
         fields = [
             'id', 'nombre_general', 'general_code', 'brand', 'slug',
-            'description', 'long_description', 'categoria', 'variants',
+            'description', 'long_description', 'categoria_nombre', 'variants',
             'imagen_principal_url', 'featured', 'tags'
         ]
 
-    # CAMBIÁ ESTE NOMBRE: de get_imagen_url a get_imagen_principal_url
     def get_imagen_principal_url(self, obj):
-        if hasattr(obj, 'imagen_principal') and obj.imagen_principal:
-            return obj.imagen_principal.url
+        request = self.context.get('request')
+        if obj.imagen_principal:
+            url = obj.imagen_principal.url
+            if request is not None:
+                return request.build_absolute_uri(url)
+            return url
         return None
 
-# --- 3. STOCK Y DEPÓSITO ---
-
-
-class DepositoSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Deposito
-        fields = '__all__'
-
-
-class StockLoteSerializer(serializers.ModelSerializer):
-    deposito_nombre = serializers.ReadOnlyField(source='deposito.nombre')
-    producto = serializers.ReadOnlyField(
-        source='variante.producto_padre.nombre_general')
-
-    class Meta:
-        model = StockLote
-        fields = ['id', 'producto', 'lote_codigo',
-                  'cantidad', 'vencimiento', 'deposito_nombre']
-
-# --- 4. MOVIMIENTOS (Para tu panel de control en Next.js) ---
-
-
-class ItemSalidaSerializer(serializers.ModelSerializer):
-    producto = serializers.ReadOnlyField(
-        source='lote.variante.producto_padre.nombre_general')
-    codigo = serializers.ReadOnlyField(source='lote.variante.product_code')
-
-    class Meta:
-        model = ItemSalidaProvisoria
-        fields = ['id', 'producto', 'codigo', 'cantidad']
+# --- 4. MOVIMIENTOS (Panel Next.js) ---
 
 
 class SalidaProvisoriaSerializer(serializers.ModelSerializer):
     items = ItemSalidaSerializer(many=True, read_only=True)
-    estado = serializers.SerializerMethodField()
+    resumen_stock = serializers.SerializerMethodField()
 
     class Meta:
         model = SalidaProvisoria
-        fields = ['id', 'fecha_salida', 'responsable',
-                  'destino', 'items', 'estado']
+        fields = [
+            'id', 'fecha_salida', 'responsable',
+            'destino', 'items', 'resumen_stock'
+        ]
 
-    def get_estado(self, obj):
-        # Reutilizamos la lógica que ya escribimos en el Admin
-        total_salido = obj.items.aggregate(Sum('cantidad'))[
-            'cantidad__sum'] or 0
-        # ... (podríamos replicar toda la lógica aquí si quisiéramos mostrarla en la web)
-        return "Consultar en Admin"
+    def get_resumen_stock(self, obj):
+        # 1. Total que salió originalmente
+        total_salido = obj.items.aggregate(
+            total=Sum('cantidad')
+        )['total'] or 0
+
+        # 2. Total que ya regresó al depósito
+        # Usamos la relación 'devoluciones' definida en el modelo
+        total_devuelto = obj.devoluciones.aggregate(
+            total=Sum('items__cantidad_devuelta')
+        )['total'] or 0
+
+        # 3. Total que ya se vendió/liquidó
+        # Usamos la relación 'liquidaciones' definida en el modelo
+        total_liquidado = obj.liquidaciones.aggregate(
+            total=Sum('items__cantidad_liquidada')
+        )['total'] or 0
+
+        # 4. Cálculo final para Next.js
+        pendientes = total_salido - (total_devuelto + total_liquidado)
+
+        return {
+            "enviado": total_salido,
+            "devuelto": total_devuelto,
+            "liquidado": total_liquidado,
+            "pendiente": pendientes,
+            "completado": pendientes <= 0
+        }

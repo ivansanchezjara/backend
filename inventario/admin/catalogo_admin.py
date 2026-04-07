@@ -1,3 +1,4 @@
+from django.utils.html import format_html
 from django.contrib import admin
 from inventario.models.catalogo import Categoria, Producto, Variante, ImagenProducto
 from inventario.models.stock import HistorialCosto
@@ -46,12 +47,36 @@ class VarianteInline(admin.StackedInline):
 
 @admin.register(Producto)
 class ProductoAdmin(admin.ModelAdmin):
-    list_display = ('nombre_general', 'general_code',
-                    'brand', 'categoria', 'featured')
+
+    list_display = ('ver_foto', 'nombre_general', 'general_code',
+                    'brand', 'categoria', 'featured', 'total_stock')
     search_fields = ('nombre_general', 'general_code', 'brand')
     list_filter = ('brand', 'categoria', 'featured')
     prepopulated_fields = {'slug': ('nombre_general',)}
     inlines = [VarianteInline]
+
+    # 1. Función para mostrar la miniatura de la imagen
+    def ver_foto(self, obj):
+        variante = obj.variants.first()
+        if variante:
+            if variante.imagen_variante:
+                return format_html('<img src="{}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px;" />', variante.imagen_variante.url)
+
+            primera_img = variante.imagenes.first()
+            if primera_img and primera_img.imagen_asset:
+                return format_html('<img src="{}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px;" />', primera_img.imagen_asset.url)
+        return "No img"
+
+    ver_foto.short_description = 'Imagen'
+
+    # 2. Función opcional para ver el stock total acumulado de todas sus variantes
+    def total_stock(self, obj):
+        from django.db.models import Sum
+        total = obj.variants.aggregate(
+            total=Sum('existencias__cantidad'))['total']
+        return total if total else 0
+
+    total_stock.short_description = 'Stock Total'
 
 
 @admin.register(Variante)
@@ -79,6 +104,16 @@ class VarianteAdmin(admin.ModelAdmin):
     @admin.display(description='Stock Total')
     def get_stock_total(self, obj):
         return obj.stock_total
+
+    @admin.display(description='Margen (%)')
+    def get_margen_porcentaje(self, obj):
+        if obj.precio_0_publico and obj.costo_fob and obj.precio_0_publico > 0:
+            porcentaje = ((obj.precio_0_publico - obj.costo_fob) /
+                          obj.precio_0_publico) * 100
+            # Ejemplo: aviso si el margen es bajo
+            color = "green" if porcentaje > 30 else "orange"
+            return format_html('<span style="color: {};">%{:.1f}</span>', color, porcentaje)
+        return "-"
 
 
 admin.site.register(Categoria)
