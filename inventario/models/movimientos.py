@@ -1,4 +1,5 @@
-from django.db import models
+from django.db import transaction
+from django.db import models, transaction
 from django.db.models import Sum
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -31,6 +32,17 @@ class IngresoMercaderia(models.Model):
         default=EstadoMovimiento.BORRADOR
     )
     procesado = models.BooleanField(default=False, editable=False)
+
+    def clean(self):
+        if self.pk:
+            # Obtenemos la versión actual en la base de datos
+            original = IngresoMercaderia.objects.get(pk=self.pk)
+            if original.estado == EstadoMovimiento.APROBADO and self.estado != EstadoMovimiento.APROBADO:
+                raise ValidationError(
+                    "No se puede cambiar el estado de un movimiento ya APROBADO. "
+                    "Esto comprometería la integridad del stock."
+                )
+        super().clean()
 
     class Meta:
         verbose_name = "Ingreso de Mercadería"
@@ -69,39 +81,40 @@ class ItemIngreso(models.Model):
 def procesar_aprobacion_ingreso(sender, instance, created, **kwargs):
     if not created and instance.estado == EstadoMovimiento.APROBADO and not instance.procesado:
 
-        for item in instance.items.all():
-            # 1. Sumar al Stock
-            lote, creado = StockLote.objects.get_or_create(
-                variante=item.variante,
-                deposito=instance.deposito,
-                lote_codigo=item.lote_codigo,
-                defaults={'cantidad': 0,
-                          'costo_compra_lote': item.costo_fob_unitario}
-            )
-            lote.cantidad += item.cantidad
-            lote.save()
+        with transaction.atomic():
+            for item in instance.items.all():
+                # 1. Sumar al Stock
+                lote, creado = StockLote.objects.get_or_create(
+                    variante=item.variante,
+                    deposito=instance.deposito,
+                    lote_codigo=item.lote_codigo,
+                    defaults={'cantidad': 0,
+                              'costo_compra_lote': item.costo_fob_unitario}
+                )
+                lote.cantidad += item.cantidad
+                lote.save()
 
-            # 2. Actualizar Precios y Costos en la Variante
-            v = item.variante
-            v.costo_fob = item.costo_fob_unitario
-            v.costo_landed = item.costo_landed_unitario
-            v.precio_0_publico = item.nuevo_precio_0_publico
-            if item.nuevo_precio_1_estudiante is not None:
-                v.precio_1_estudiante = item.nuevo_precio_1_estudiante
-            if item.nuevo_precio_2_reventa is not None:
-                v.precio_2_reventa = item.nuevo_precio_2_reventa
-            if item.nuevo_precio_3_mayorista is not None:
-                v.precio_3_mayorista = item.nuevo_precio_3_mayorista
-            if item.nuevo_precio_4_intercompany is not None:
-                v.precio_4_intercompany = item.nuevo_precio_4_intercompany
-            v.save()
+                # 2. Actualizar Precios y Costos en la Variante
+                v = item.variante
+                v.costo_fob = item.costo_fob_unitario
+                v.costo_landed = item.costo_landed_unitario
+                v.precio_0_publico = item.nuevo_precio_0_publico
+                if item.nuevo_precio_1_estudiante is not None:
+                    v.precio_1_estudiante = item.nuevo_precio_1_estudiante
+                if item.nuevo_precio_2_reventa is not None:
+                    v.precio_2_reventa = item.nuevo_precio_2_reventa
+                if item.nuevo_precio_3_mayorista is not None:
+                    v.precio_3_mayorista = item.nuevo_precio_3_mayorista
+                if item.nuevo_precio_4_intercompany is not None:
+                    v.precio_4_intercompany = item.nuevo_precio_4_intercompany
+                v.save()
 
-            # 3. Guardar Historial
-            HistorialCosto.objects.create(
-                variante=v,
-                costo_fob=item.costo_fob_unitario,
-                lote_referencia=item.lote_codigo
-            )
+                # 3. Guardar Historial
+                HistorialCosto.objects.create(
+                    variante=v,
+                    costo_fob=item.costo_fob_unitario,
+                    lote_referencia=item.lote_codigo
+                )
 
         # 4. Marcar como procesado (usamos update para evitar disparar la señal de nuevo)
         IngresoMercaderia.objects.filter(pk=instance.pk).update(procesado=True)
@@ -134,6 +147,17 @@ class BajaInventario(models.Model):
     )
     procesado = models.BooleanField(default=False, editable=False)
 
+    def clean(self):
+        if self.pk:
+            # Obtenemos el objeto tal cual está en la DB antes de guardar los cambios
+            original = type(self).objects.get(pk=self.pk)
+            if original.estado == EstadoMovimiento.APROBADO and self.estado != EstadoMovimiento.APROBADO:
+                raise ValidationError(
+                    f"Este movimiento ya fue APROBADO y procesado. "
+                    "No se puede revertir a otro estado por integridad de inventario."
+                )
+        super().clean()
+
     class Meta:
         verbose_name = "Baja de Inventario"
         verbose_name_plural = "Bajas de Inventario"
@@ -144,12 +168,22 @@ class BajaInventario(models.Model):
 
 @receiver(post_save, sender=BajaInventario)
 def procesar_aprobacion_baja(sender, instance, created, **kwargs):
+    # Verificamos que pase a APROBADO y no se haya procesado ya
     if not created and instance.estado == EstadoMovimiento.APROBADO and not instance.procesado:
-        instance.lote.cantidad -= instance.cantidad
-        instance.lote.save()
-        
-        BajaInventario.objects.filter(pk=instance.pk).update(procesado=True)
-        instance.procesado = True
+
+        with transaction.atomic():
+            # 1. Restar el stock del lote
+            lote = instance.lote
+            lote.cantidad -= instance.cantidad
+            lote.save()
+
+            # 2. Marcar como procesado en la DB
+            # Usamos .update() para evitar que se disparen señales infinitas
+            BajaInventario.objects.filter(
+                pk=instance.pk).update(procesado=True)
+
+            # Actualizamos la instancia en memoria por si se usa luego en el mismo hilo
+            instance.procesado = True
 
 # 3. TRANSFERENCIAS Internas
 
@@ -170,10 +204,32 @@ class TransferenciaInterna(models.Model):
         verbose_name_plural = "Transferencias Internas"
 
     def clean(self):
+        # 1. PRIMERO: Validar el estado si el objeto ya existe en la DB (pk no es None)
+        if self.pk:
+            original = TransferenciaInterna.objects.get(pk=self.pk)
+            # Bloqueamos cualquier cambio si ya estaba APROBADO
+            if original.estado == EstadoMovimiento.APROBADO and self.estado != EstadoMovimiento.APROBADO:
+                raise ValidationError(
+                    "Esta transferencia ya fue APROBADA. No se puede revertir el estado por integridad de stock."
+                )
+
+            # Opcional: Bloquear cambios en cantidad o lotes si ya está aprobado
+            if original.estado == EstadoMovimiento.APROBADO:
+                if self.cantidad != original.cantidad or self.lote_origen != original.lote_origen:
+                    raise ValidationError(
+                        "No se pueden modificar datos de una transferencia aprobada.")
+
+        # 2. SEGUNDO: Validaciones de lógica de negocio (las que ya tenías)
         if self.cantidad > self.lote_origen.cantidad:
-            raise ValidationError("Stock insuficiente")
+            raise ValidationError(
+                f"Stock insuficiente en lote origen. Disponible: {self.lote_origen.cantidad}")
+
         if self.lote_origen.deposito == self.deposito_destino:
-            raise ValidationError("Mismo depósito")
+            raise ValidationError(
+                "El depósito de origen y destino no pueden ser el mismo.")
+
+        # 3. SIEMPRE llamar al super al final
+        super().clean()
 
     def __str__(self):
         return f"Transf. {self.id} | {self.cantidad}u. {self.lote_origen.variante.product_code} -> {self.deposito_destino.nombre}"
@@ -181,18 +237,33 @@ class TransferenciaInterna(models.Model):
 
 @receiver(post_save, sender=TransferenciaInterna)
 def procesar_transferencia(sender, instance, created, **kwargs):
-    if created:
-        instance.lote_origen.cantidad -= instance.cantidad
-        instance.lote_origen.save()
-        lote_dest, _ = StockLote.objects.get_or_create(
-            variante=instance.lote_origen.variante,
-            deposito=instance.deposito_destino,
-            lote_codigo=instance.lote_origen.lote_codigo,
-            defaults={'cantidad': 0, 'costo_compra_lote': instance.lote_origen.costo_compra_lote,
-                      'vencimiento': instance.lote_origen.vencimiento}
-        )
-        lote_dest.cantidad += instance.cantidad
-        lote_dest.save()
+    # Solo actuamos si el estado es APROBADO y aún no fue procesado
+    if instance.estado == EstadoMovimiento.APROBADO and not instance.procesado:
+
+        with transaction.atomic():
+            # 1. Restar del origen
+            lote_origen = instance.lote_origen
+            lote_origen.cantidad -= instance.cantidad
+            lote_origen.save()
+
+            # 2. Sumar o crear en el destino
+            lote_dest, _ = StockLote.objects.get_or_create(
+                variante=instance.lote_origen.variante,
+                deposito=instance.deposito_destino,
+                lote_codigo=instance.lote_origen.lote_codigo,
+                defaults={
+                    'cantidad': 0,
+                    'costo_compra_lote': instance.lote_origen.costo_compra_lote,
+                    'vencimiento': instance.lote_origen.vencimiento
+                }
+            )
+            lote_dest.cantidad += instance.cantidad
+            lote_dest.save()
+
+            # 3. Marcar como procesado para que no se repita el movimiento
+            # Usamos update para evitar disparar señales de nuevo
+            TransferenciaInterna.objects.filter(
+                pk=instance.pk).update(procesado=True)
 
 # 4. AJUSTES COMERCIALES
 
@@ -248,39 +319,48 @@ class AjusteComercial(models.Model):
 
 @receiver(post_save, sender=AjusteComercial)
 def aplicar_ajuste_comercial(sender, instance, created, **kwargs):
-    # Solo disparamos la lógica cuando el estado pasa a APROBADO
+    # Solo disparamos la lógica cuando el estado pasa a APROBADO y no ha sido procesado
     if not created and instance.estado == EstadoMovimiento.APROBADO and not instance.procesado:
-        v = instance.variante
 
-        # --- Actualización de Costos ---
-        if instance.nuevo_costo_fob:
-            v.costo_fob = instance.nuevo_costo_fob
-            # Registramos en el historial para ver la evolución del costo
-            HistorialCosto.objects.create(
-                variante=v,
-                costo_fob=instance.nuevo_costo_fob,
-                lote_referencia=f"Ajuste ID {instance.id}"
-            )
+        with transaction.atomic():
+            v = instance.variante
 
-        if instance.nuevo_costo_landed:
-            v.costo_landed = instance.nuevo_costo_landed
+            # --- Actualización de Costos ---
+            if instance.nuevo_costo_fob:
+                v.costo_fob = instance.nuevo_costo_fob
+                # Registramos en el historial
+                HistorialCosto.objects.create(
+                    variante=v,
+                    costo_fob=instance.nuevo_costo_fob,
+                    lote_referencia=f"Ajuste ID {instance.id}"
+                )
 
-        # --- Actualización de Precios (0 al 4) ---
-        if instance.nuevo_precio_0:
-            v.precio_0_publico = instance.nuevo_precio_0
-        if instance.nuevo_precio_1:
-            v.precio_1_estudiante = instance.nuevo_precio_1
-        if instance.nuevo_precio_2:
-            v.precio_2_reventa = instance.nuevo_precio_2
-        if instance.nuevo_precio_3:
-            v.precio_3_mayorista = instance.nuevo_precio_3
-        if instance.nuevo_precio_4:
-            v.precio_4_intercompany = instance.nuevo_precio_4
+            if instance.nuevo_costo_landed:
+                v.costo_landed = instance.nuevo_costo_landed
 
-        v.save()
-        
-        AjusteComercial.objects.filter(pk=instance.pk).update(procesado=True)
-        instance.procesado = True
+            # --- Actualización de Precios (0 al 4) ---
+            # Usamos getattr para limpiar un poco el código si prefieres,
+            # pero manteniendo tu estructura actual:
+            if instance.nuevo_precio_0:
+                v.precio_0_publico = instance.nuevo_precio_0
+            if instance.nuevo_precio_1:
+                v.precio_1_estudiante = instance.nuevo_precio_1
+            if instance.nuevo_precio_2:
+                v.precio_2_reventa = instance.nuevo_precio_2
+            if instance.nuevo_precio_3:
+                v.precio_3_mayorista = instance.nuevo_precio_3
+            if instance.nuevo_precio_4:
+                v.precio_4_intercompany = instance.nuevo_precio_4
+
+            # Guardamos todos los cambios en la variante de una sola vez
+            v.save()
+
+            # Marcamos como procesado en la DB
+            AjusteComercial.objects.filter(
+                pk=instance.pk).update(procesado=True)
+
+            # Actualizamos en memoria
+            instance.procesado = True
 
 # 5. SALIDAS Y DEVOLUCIONES PROVISORIAS
 
@@ -297,6 +377,17 @@ class SalidaProvisoria(models.Model):
     class Meta:
         verbose_name = "Salida en Consignación"
         verbose_name_plural = "Salidas en Consignación"
+
+    def clean(self):
+        if self.pk:
+            # Obtenemos el objeto tal cual está en la DB antes de guardar los cambios
+            original = type(self).objects.get(pk=self.pk)
+            if original.estado == EstadoMovimiento.APROBADO and self.estado != EstadoMovimiento.APROBADO:
+                raise ValidationError(
+                    f"Este movimiento ya fue APROBADO y procesado. "
+                    "No se puede revertir a otro estado por integridad de inventario."
+                )
+        super().clean()
 
     def __str__(self):
         fecha = self.fecha_salida.strftime(
@@ -324,9 +415,26 @@ class ItemSalidaProvisoria(models.Model):
 
 @receiver(post_save, sender=ItemSalidaProvisoria)
 def procesar_item_salida_provisoria(sender, instance, created, **kwargs):
-    if created:
-        instance.lote.cantidad -= instance.cantidad
-        instance.lote.save()
+    # La salida provisoria debe descontar stock SOLO si la cabecera está APROBADA
+    # y si este item individual aún no ha sido procesado.
+    salida_padre = instance.salida
+
+    if salida_padre.estado == EstadoMovimiento.APROBADO and not instance.procesado:
+        with transaction.atomic():
+            # 1. Descontar del lote
+            lote = instance.lote
+            if lote.cantidad < instance.cantidad:
+                # Opcional: Una última red de seguridad por si el clean falló
+                raise ValidationError(
+                    f"No hay suficiente stock en el lote {lote.lote_codigo}")
+
+            lote.cantidad -= instance.cantidad
+            lote.save()
+
+            # 2. Marcar el item como procesado
+            ItemSalidaProvisoria.objects.filter(
+                pk=instance.pk).update(procesado=True)
+            instance.procesado = True
 
 
 class DevolucionSalidaProvisoria(models.Model):
@@ -337,6 +445,17 @@ class DevolucionSalidaProvisoria(models.Model):
     observaciones = models.CharField(max_length=255, blank=True)
     usuario = models.ForeignKey(
         User, on_delete=models.PROTECT, null=True, blank=True)
+
+    def clean(self):
+        if self.pk:
+            # Obtenemos el objeto tal cual está en la DB antes de guardar los cambios
+            original = type(self).objects.get(pk=self.pk)
+            if original.estado == EstadoMovimiento.APROBADO and self.estado != EstadoMovimiento.APROBADO:
+                raise ValidationError(
+                    f"Este movimiento ya fue APROBADO y procesado. "
+                    "No se puede revertir a otro estado por integridad de inventario."
+                )
+        super().clean()
 
     class Meta:
         verbose_name = "Retorno al Depósito"
@@ -372,17 +491,35 @@ class ItemDevolucionProvisoria(models.Model):
 
 @receiver(post_save, sender=ItemDevolucionProvisoria)
 def procesar_item_devolucion(sender, instance, created, **kwargs):
-    if created:
-        lote_or = instance.item_salida.lote
-        dest, _ = StockLote.objects.get_or_create(
-            variante=lote_or.variante,
-            deposito=instance.devolucion.deposito_destino,
-            lote_codigo=lote_or.lote_codigo,
-            defaults={'cantidad': 0, 'costo_compra_lote': lote_or.costo_compra_lote,
-                      'vencimiento': lote_or.vencimiento, 'qr_code': lote_or.qr_code}
-        )
-        dest.cantidad += instance.cantidad_devuelta
-        dest.save()
+    # Accedemos a la cabecera (DevolucionSalidaProvisoria) para ver su estado
+    devolucion_padre = instance.devolucion
+
+    # Solo sumamos stock si la devolución está APROBADA y este ítem no fue procesado
+    if devolucion_padre.estado == EstadoMovimiento.APROBADO and not instance.procesado:
+        with transaction.atomic():
+            lote_original = instance.item_salida.lote
+
+            # Buscamos o creamos el lote en el depósito de destino (donde vuelve la mercadería)
+            dest, _ = StockLote.objects.get_or_create(
+                variante=lote_original.variante,
+                deposito=devolucion_padre.deposito_destino,
+                lote_codigo=lote_original.lote_codigo,
+                defaults={
+                    'cantidad': 0,
+                    'costo_compra_lote': lote_original.costo_compra_lote,
+                    'vencimiento': lote_original.vencimiento,
+                    'qr_code': lote_original.qr_code
+                }
+            )
+
+            # Sumamos la cantidad devuelta
+            dest.cantidad += instance.cantidad_devuelta
+            dest.save()
+
+            # Marcamos este item como procesado para no duplicar stock si se vuelve a guardar
+            ItemDevolucionProvisoria.objects.filter(
+                pk=instance.pk).update(procesado=True)
+            instance.procesado = True
 
 
 class MotivoLiquidacion(models.TextChoices):
