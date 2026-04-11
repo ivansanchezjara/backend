@@ -1,5 +1,5 @@
 from django.db import models
-from .catalogo import Variante  # Importamos de nuestro archivo de al lado
+from simple_history.models import HistoricalRecords
 
 
 class Deposito(models.Model):
@@ -15,7 +15,7 @@ class Deposito(models.Model):
 
 class StockLote(models.Model):
     variante = models.ForeignKey(
-        Variante, on_delete=models.CASCADE, related_name="existencias")
+        'catalogo.Variante', on_delete=models.CASCADE, related_name="existencias")
     deposito = models.ForeignKey(Deposito, on_delete=models.PROTECT)
     lote_codigo = models.CharField(max_length=100)
     cantidad = models.IntegerField(default=0)
@@ -23,6 +23,7 @@ class StockLote(models.Model):
     qr_code = models.CharField(max_length=255, null=True, blank=True)
     costo_compra_lote = models.DecimalField(max_digits=12, decimal_places=2)
     fecha_entrada = models.DateTimeField(auto_now_add=True)
+    history = HistoricalRecords()
 
     class Meta:
         unique_together = ('variante', 'deposito', 'lote_codigo')
@@ -41,7 +42,7 @@ class StockLote(models.Model):
 
 class HistorialCosto(models.Model):
     variante = models.ForeignKey(
-        Variante, on_delete=models.CASCADE, related_name="historico_costos")
+        'catalogo.Variante', on_delete=models.CASCADE, related_name="historico_costos")
     costo_fob = models.DecimalField(max_digits=12, decimal_places=2)
     fecha = models.DateTimeField(auto_now_add=True)
     lote_referencia = models.CharField(max_length=100, blank=True)

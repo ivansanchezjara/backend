@@ -1,13 +1,13 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-# ACTUALIZADO: Agregamos CategoriaViewSet a la importación
-from .views import ProductoViewSet, CategoriaViewSet
+from .views import SalidaProvisoriaViewSet
 
-# El router crea automáticamente las URLs
+
+# El router del inventario
 router = DefaultRouter()
-router.register(r'productos', ProductoViewSet)
-# NUEVO: Le enseñamos a Django la ruta para las categorías
-router.register(r'categorias', CategoriaViewSet)
+# Registramos la vista que armamos en el paso anterior
+router.register(r'salidas-provisorias', SalidaProvisoriaViewSet,
+                basename='salida-provisoria')
 
 urlpatterns = [
     path('', include(router.urls)),

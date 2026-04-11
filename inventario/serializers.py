@@ -1,84 +1,6 @@
 from rest_framework import serializers
 from django.db.models import Sum
-from .models.catalogo import Producto, Variante, Categoria, ImagenProducto
-from .models.stock import Deposito, StockLote
-from .models.movimientos import SalidaProvisoria, ItemSalidaProvisoria
-
-# --- 1. AUXILIARES (IMÁGENES) ---
-
-
-class ImagenProductoSerializer(serializers.ModelSerializer):
-    url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ImagenProducto
-        fields = ['id', 'url', 'descripcion', 'orden']
-
-    def get_url(self, obj):
-        request = self.context.get('request')
-        if obj.imagen_asset:
-            url = obj.imagen_asset.url
-            if request is not None:
-                return request.build_absolute_uri(url)
-            return url
-        return None
-
-# --- 2. CATÁLOGO ---
-
-
-class CategoriaSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Categoria
-        fields = '__all__'
-
-
-class VarianteSerializer(serializers.ModelSerializer):
-    stock = serializers.ReadOnlyField(source='stock_total')
-    imagenes = ImagenProductoSerializer(many=True, read_only=True)
-    imagen_url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Variante
-        fields = [
-            'id', 'product_code', 'nombre_variante', 'sub_slug',
-            'precio_0_publico', 'precio_oferta', 'stock', 'imagenes', 'imagen_url'
-        ]
-
-    def get_imagen_url(self, obj):
-        request = self.context.get('request')
-        if obj.imagen_variante:
-            url = obj.imagen_variante.url
-            if request is not None:
-                return request.build_absolute_uri(url)
-            return url
-        return None
-
-
-class ProductoSerializer(serializers.ModelSerializer):
-    categoria = CategoriaSerializer(read_only=True)
-    variants = VarianteSerializer(many=True, read_only=True)
-    imagen_principal_url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Producto
-        fields = [
-            'id', 'nombre_general', 'general_code', 'brand', 'slug',
-            'description', 'long_description', 'categoria', 'variants',
-            'imagen_principal_url', 'featured', 'tags'
-        ]
-
-    def get_imagen_principal_url(self, obj):
-        request = self.context.get('request')
-        if obj.imagen_principal:
-            url = obj.imagen_principal.url
-            if request is not None:
-                return request.build_absolute_uri(url)
-            return url
-        return None
-
-# --- 3. MOVIMIENTOS (ORGANIZADO DE HIJO A PADRE) ---
-
-# Primero el ítem (El hijo)
+from .models.consignaciones import SalidaProvisoria, ItemSalidaProvisoria
 
 
 class ItemSalidaSerializer(serializers.ModelSerializer):
@@ -89,8 +11,6 @@ class ItemSalidaSerializer(serializers.ModelSerializer):
     class Meta:
         model = ItemSalidaProvisoria
         fields = ['id', 'producto', 'codigo', 'cantidad']
-
-# Luego la salida (El padre que usa al hijo)
 
 
 class SalidaProvisoriaSerializer(serializers.ModelSerializer):

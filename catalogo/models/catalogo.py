@@ -1,6 +1,7 @@
 from django.db import models
 from django.db.models import Sum
 from filer.fields.image import FilerImageField
+from simple_history.models import HistoricalRecords
 
 
 class Categoria(models.Model):
@@ -30,6 +31,7 @@ class Producto(models.Model):
     long_description = models.TextField()
     featured = models.BooleanField(default=False)
     tags = models.JSONField(default=list, blank=True)
+    history = HistoricalRecords()
     is_published = models.BooleanField(
         default=False,
         verbose_name="Publicado en Web",
@@ -53,6 +55,7 @@ class Variante(models.Model):
         max_length=150, help_text="Ej: 1-mini-extra-flex")
     imagen_variante = FilerImageField(
         null=True, blank=True, on_delete=models.SET_NULL, related_name="variante_principal")
+    history = HistoricalRecords()
 
     costo_fob = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     costo_landed = models.DecimalField(
@@ -75,11 +78,6 @@ class Variante(models.Model):
     class Meta:
         verbose_name = "Variante de Producto"
         verbose_name_plural = "Variantes de Productos"
-
-    @property
-    def stock_total(self):
-        total = self.existencias.aggregate(Sum('cantidad'))['cantidad__sum']
-        return total if total is not None else 0
 
     def __str__(self): return f"{self.product_code} - {self.nombre_variante}"
 

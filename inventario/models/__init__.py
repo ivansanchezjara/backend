@@ -1,8 +1,13 @@
 # inventario/models/__init__.py
-from .catalogo import Categoria, Producto, Variante, ImagenProducto
+
 from .stock import Deposito, StockLote, HistorialCosto
-from .movimientos import (
-    IngresoMercaderia, ItemIngreso, BajaInventario, TransferenciaInterna,
-    AjusteComercial, SalidaProvisoria, ItemSalidaProvisoria,
-    DevolucionSalidaProvisoria, ItemDevolucionProvisoria
+from .base import EstadoMovimiento
+from .ingresos import IngresoMercaderia, ItemIngreso
+from .bajas import BajaInventario, MotivoBaja
+from .transferencias import TransferenciaInterna
+from .ajustes import AjusteComercial, MotivoAjuste
+from .consignaciones import (
+    SalidaProvisoria, ItemSalidaProvisoria,
+    DevolucionSalidaProvisoria, ItemDevolucionProvisoria,
+    LiquidacionSalidaProvisoria, ItemLiquidacionProvisoria, MotivoLiquidacion
 )

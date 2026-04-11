@@ -21,8 +21,9 @@ urlpatterns = [
     # 3. ENDPOINT DE REFRESH
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
-    # Conectamos las URLs de la app inventario
-    path('api/', include('inventario.urls')),
+    # Conectamos las URLs de las apps
+    path('api/inventario/', include('inventario.urls')),
+    path('api/catalogo/', include('catalogo.urls')),
 ]
 
 if settings.DEBUG:
