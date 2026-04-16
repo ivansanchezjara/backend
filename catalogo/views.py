@@ -4,21 +4,23 @@ from rest_framework.response import Response
 from django.db.models import Sum, Prefetch
 from django.db.models.functions import Coalesce
 
-from .models import Producto, Categoria, Variante
+from .models import Producto, Categoria, Variante, ImagenProducto
 from .serializers import (
     ProductoSerializer, ProductoWriteSerializer,
     CategoriaSerializer, VarianteSerializer, VarianteWriteSerializer,
+    ImagenProductoSerializer,
 )
 
 
 def _variantes_con_stock():
     """Queryset de variantes anotado con stock total. Reutilizable."""
-    return Variante.objects.annotate(
-        stock_total_calculado=Coalesce(Sum('existencias__cantidad'), 0)
+    return Variante.objects.filter(activo=True).annotate(
+        stock_total_calculado=Coalesce(Sum('existencias__cantidad'), 0),
+        stock_vencido_calculado=Coalesce(Sum('existencias__cantidad_vencida'), 0)
     ).prefetch_related('imagenes')
 
 
-class CategoriaViewSet(viewsets.ReadOnlyModelViewSet):
+class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
     permission_classes = [IsAuthenticated]
@@ -35,7 +37,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
     lookup_field = 'slug'
 
     def get_queryset(self):
-        return Producto.objects.select_related('categoria').prefetch_related(
+        return Producto.objects.filter(activo=True).select_related('categoria').prefetch_related(
             Prefetch('variants', queryset=_variantes_con_stock())
         )
 
@@ -71,6 +73,14 @@ class ProductoViewSet(viewsets.ModelViewSet):
             context=self.get_serializer_context()
         )
         return Response(read_s.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # En lugar de borrar, lo desactivamos
+        instance.activo = False
+        instance.save()
+        # Retornamos un 204 (No Content) que es el estándar de éxito para un DELETE
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class VarianteViewSet(viewsets.ModelViewSet):
@@ -114,3 +124,28 @@ class VarianteViewSet(viewsets.ModelViewSet):
             context=self.get_serializer_context()
         )
         return Response(read_s.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+
+        # Validación: No se puede desactivar si hay stock físico
+        stock = getattr(instance, 'stock_total_calculado', 0)
+        if stock > 0:
+            return Response(
+                {"detail": f"No se puede desactivar la variante '{instance.nombre_variante}' porque aún tiene {stock} unidades en stock. Primero debe realizar un ajuste de baja o transferencia."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # En lugar de borrar físicamente, realizamos un borrado lógico (desactivar)
+        instance.activo = False
+        instance.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ImagenProductoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gestionar la galería de imágenes de las variantes.
+    """
+    queryset = ImagenProducto.objects.all()
+    serializer_class = ImagenProductoSerializer
+    permission_classes = [IsAuthenticated]

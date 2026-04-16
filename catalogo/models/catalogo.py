@@ -37,6 +37,17 @@ class Producto(models.Model):
         verbose_name="Publicado en Web",
         help_text="Si está marcado, el producto será visible en la página online."
     )
+    atributos = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Ej: {"talla": "M", "sabor": "Menta"}'
+    )
+
+    activo = models.BooleanField(
+        default=True,
+        verbose_name="Activo en Sistema",
+        help_text="Desmarcar para archivar y ocultar del sistema sin borrar el historial."
+    )
 
     class Meta:
         verbose_name = "Producto"
@@ -57,10 +68,16 @@ class Variante(models.Model):
         null=True, blank=True, on_delete=models.SET_NULL, related_name="variante_principal")
     history = HistoricalRecords()
 
+    activo = models.BooleanField(
+        default=True,
+        verbose_name="Variante Activa",
+        help_text="Desmarcar si esta variante ya no se comercializa."
+    )
+
+    # --- Costos y Precios ---
     costo_fob = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     costo_landed = models.DecimalField(
         max_digits=12, decimal_places=2, default=0)
-
     precio_0_publico = models.DecimalField(
         max_digits=12, decimal_places=2, default=0)
     precio_1_estudiante = models.DecimalField(
@@ -78,6 +95,7 @@ class Variante(models.Model):
     class Meta:
         verbose_name = "Variante de Producto"
         verbose_name_plural = "Variantes de Productos"
+        unique_together = ('producto_padre', 'sub_slug')
 
     def __str__(self): return f"{self.product_code} - {self.nombre_variante}"
 

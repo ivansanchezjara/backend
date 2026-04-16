@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'simple_history',
+    'django_apscheduler',
 
     # Apps de terceros (Las que instalamos con pip)
     'rest_framework',

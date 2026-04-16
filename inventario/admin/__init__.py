@@ -51,7 +51,7 @@ def custom_get_app_list(request, app_label=None):
 
             # Creamos el bloque de Consignaciones
             app_list.append({
-                'name': '🤝 Consignaciones (Doctores)',
+                'name': '🤝 Consignaciones',
                 'app_label': 'consignaciones_app',
                 'app_url': '',
                 'has_module_perms': True,

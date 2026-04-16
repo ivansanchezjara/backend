@@ -4,6 +4,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.core.validators import MinValueValidator
 from simple_history.models import HistoricalRecords
 
 # Importamos lo que necesitamos de nuestros "hermanos"
@@ -49,11 +50,13 @@ class ItemIngreso(models.Model):
     ingreso = models.ForeignKey(
         IngresoMercaderia, on_delete=models.CASCADE, related_name="items")
     variante = models.ForeignKey('catalogo.Variante', on_delete=models.CASCADE)
-    cantidad = models.PositiveIntegerField()
+    cantidad = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)])
     costo_fob_unitario = models.DecimalField(max_digits=12, decimal_places=2)
     costo_landed_unitario = models.DecimalField(
         max_digits=12, decimal_places=2)
     lote_codigo = models.CharField(max_length=100)
+    vencimiento = models.DateField(null=True, blank=True)
 
     nuevo_precio_0_publico = models.DecimalField(
         max_digits=12, decimal_places=2)
@@ -81,10 +84,15 @@ def procesar_aprobacion_ingreso(sender, instance, created, **kwargs):
                     variante=item.variante,
                     deposito=instance.deposito,
                     lote_codigo=item.lote_codigo,
-                    defaults={'cantidad': 0,
-                              'costo_compra_lote': item.costo_fob_unitario}
+                    defaults={
+                        'cantidad': 0,
+                        'vencimiento': item.vencimiento,
+                        'costo_compra_lote': item.costo_fob_unitario
+                    }
                 )
                 lote.cantidad += item.cantidad
+                if item.vencimiento:
+                    lote.vencimiento = item.vencimiento
                 lote.save()
 
                 # 2. Actualizar Precios y Costos en la Variante

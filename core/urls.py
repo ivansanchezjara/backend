@@ -5,8 +5,14 @@ from django.conf.urls.static import static
 from django.views.generic import RedirectView  # <--- NUEVO IMPORT
 
 # 1. IMPORTAMOS TU NUEVA VISTA Y EL REFRESH NORMAL
-from .views import MyTokenObtainPairView
+from .views import MyTokenObtainPairView, UserProfileView
 from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework.routers import DefaultRouter
+from .filer_views import FolderViewSet, ImageViewSet
+
+filer_router = DefaultRouter()
+filer_router.register(r'folders', FolderViewSet, basename='filer-folder')
+filer_router.register(r'images', ImageViewSet, basename='filer-image')
 
 urlpatterns = [
     # 0. REDIRECCIÓN DE LA RAÍZ AL ADMIN
@@ -21,9 +27,13 @@ urlpatterns = [
     # 3. ENDPOINT DE REFRESH
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
+    # 4. ENDPOINT DE PERFIL
+    path('api/profile/', UserProfileView.as_view(), name='user-profile'),
+
     # Conectamos las URLs de las apps
     path('api/inventario/', include('inventario.urls')),
     path('api/catalogo/', include('catalogo.urls')),
+    path('api/filer/', include(filer_router.urls)),
 ]
 
 if settings.DEBUG:

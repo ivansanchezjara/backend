@@ -4,7 +4,7 @@ from simple_history.admin import SimpleHistoryAdmin
 
 # Importaciones subiendo un nivel
 from ..models.bajas import BajaInventario
-from ..models.transferencias import TransferenciaInterna
+from ..models.transferencias import TransferenciaInterna, ItemTransferencia
 from ..models.ajustes import AjusteComercial
 
 
@@ -49,15 +49,20 @@ class BajaInventarioAdmin(SimpleHistoryAdmin):
         return False
 
 
+class ItemTransferenciaInline(admin.TabularInline):
+    model = ItemTransferencia
+    extra = 1
+    autocomplete_fields = ['lote_origen']
+
+
 @admin.register(TransferenciaInterna)
 class TransferenciaInternaAdmin(SimpleHistoryAdmin):
-    list_display = ('fecha', 'lote_origen',
-                    'deposito_destino', 'cantidad', 'usuario')
-    list_filter = ('fecha', 'deposito_destino', 'usuario')
-    autocomplete_fields = ['lote_origen']
-    search_fields = ('lote_origen__variante__product_code',
-                     'lote_origen__lote_codigo')
-    readonly_fields = ('usuario',)
+    list_display = ('id', 'fecha', 'deposito_origen',
+                    'deposito_destino', 'estado', 'procesado', 'usuario')
+    list_filter = ('estado', 'procesado', 'fecha', 'deposito_origen', 'deposito_destino', 'usuario')
+    search_fields = ('observaciones', 'id')
+    readonly_fields = ('usuario', 'procesado')
+    inlines = [ItemTransferenciaInline]
 
     def save_model(self, request, obj, form, change):
         if not obj.pk:
@@ -65,11 +70,24 @@ class TransferenciaInternaAdmin(SimpleHistoryAdmin):
         super().save_model(request, obj, form, change)
 
     def has_change_permission(self, request, obj=None):
-        return False if obj else True
+        if obj and obj.estado == 'APROBADO':
+            return False
+        return True
 
     def has_view_permission(self, request, obj=None): return True
 
-    def has_delete_permission(self, request, obj=None): return False
+    def has_delete_permission(self, request, obj=None):
+        if obj and obj.estado == 'BORRADOR' and request.user.is_superuser:
+            return True
+        return False
+
+
+@admin.register(ItemTransferencia)
+class ItemTransferenciaAdmin(admin.ModelAdmin):
+    list_display = ('id', 'transferencia', 'lote_origen', 'cantidad')
+    list_filter = ('transferencia__fecha',)
+    autocomplete_fields = ['lote_origen', 'transferencia']
+
 
 
 @admin.register(AjusteComercial)

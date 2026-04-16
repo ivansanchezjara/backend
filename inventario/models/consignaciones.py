@@ -19,6 +19,8 @@ class SalidaProvisoria(models.Model):
     observaciones = models.CharField(max_length=255, blank=True)
     usuario = models.ForeignKey(
         User, on_delete=models.PROTECT, null=True, blank=True)
+    estado = models.CharField(
+        max_length=20, choices=EstadoMovimiento.choices, default=EstadoMovimiento.BORRADOR)
     history = HistoricalRecords()
 
     class Meta:
@@ -27,18 +29,14 @@ class SalidaProvisoria(models.Model):
 
     def clean(self):
         if self.pk:
-            # Obtenemos el objeto tal cual está en la DB antes de guardar los cambios
-            original = type(self).objects.get(pk=self.pk)
+            original = SalidaProvisoria.objects.get(pk=self.pk)
             if original.estado == EstadoMovimiento.APROBADO and self.estado != EstadoMovimiento.APROBADO:
                 raise ValidationError(
-                    f"Este movimiento ya fue APROBADO y procesado. "
-                    "No se puede revertir a otro estado por integridad de inventario."
-                )
+                    "Este movimiento ya fue APROBADO. No se puede revertir el estado.")
         super().clean()
 
     def __str__(self):
-        fecha = self.fecha_salida.strftime(
-            '%d/%m/%Y') if self.fecha_salida else ''
+        fecha = self.fecha_salida.strftime('%d/%m/%Y') if self.fecha_salida else ''
         return f"Salida {self.id} | {self.responsable} | {self.destino} ({fecha})"
 
 
@@ -47,6 +45,7 @@ class ItemSalidaProvisoria(models.Model):
         SalidaProvisoria, on_delete=models.CASCADE, related_name="items")
     lote = models.ForeignKey(StockLote, on_delete=models.CASCADE)
     cantidad = models.PositiveIntegerField()
+    procesado = models.BooleanField(default=False, editable=False)
 
     class Meta:
         verbose_name = "Ítem de Salida Provisoria"
@@ -54,34 +53,29 @@ class ItemSalidaProvisoria(models.Model):
 
     def clean(self):
         if self.cantidad > self.lote.cantidad:
-            raise ValidationError("Stock insuficiente")
+            raise ValidationError(f"Stock insuficiente en lote {self.lote.lote_codigo}")
 
     def __str__(self):
-        return f"{self.cantidad}u. de {self.lote.variante.product_code} (Lote: {self.lote.lote_codigo})"
+        return f"{self.cantidad}u. de {self.lote.variante.product_code}"
 
 
-@receiver(post_save, sender=ItemSalidaProvisoria)
-def procesar_item_salida_provisoria(sender, instance, created, **kwargs):
-    # La salida provisoria debe descontar stock SOLO si la cabecera está APROBADA
-    # y si este item individual aún no ha sido procesado.
-    salida_padre = instance.salida
-
-    if salida_padre.estado == EstadoMovimiento.APROBADO and not instance.procesado:
+@receiver(post_save, sender=SalidaProvisoria)
+def procesar_cambio_estado_salida(sender, instance, created, **kwargs):
+    """
+    Cuando una salida pasa a APROBADO, debemos descontar el stock de todos sus items
+    que no hayan sido procesados aún.
+    """
+    if instance.estado == EstadoMovimiento.APROBADO:
         with transaction.atomic():
-            # 1. Descontar del lote
-            lote = instance.lote
-            if lote.cantidad < instance.cantidad:
-                # Opcional: Una última red de seguridad por si el clean falló
-                raise ValidationError(
-                    f"No hay suficiente stock en el lote {lote.lote_codigo}")
-
-            lote.cantidad -= instance.cantidad
-            lote.save()
-
-            # 2. Marcar el item como procesado
-            ItemSalidaProvisoria.objects.filter(
-                pk=instance.pk).update(procesado=True)
-            instance.procesado = True
+            # Buscamos items pendientes de procesar para esta salida
+            items_pendientes = instance.items.filter(procesado=False)
+            for item in items_pendientes:
+                lote = item.lote
+                lote.cantidad -= item.cantidad
+                lote.save()
+                
+                # Marcamos como procesado usando update para evitar disparar señales recursivas
+                ItemSalidaProvisoria.objects.filter(pk=item.pk).update(procesado=True)
 
 
 class DevolucionSalidaProvisoria(models.Model):
@@ -92,24 +86,23 @@ class DevolucionSalidaProvisoria(models.Model):
     observaciones = models.CharField(max_length=255, blank=True)
     usuario = models.ForeignKey(
         User, on_delete=models.PROTECT, null=True, blank=True)
+    estado = models.CharField(
+        max_length=20, choices=EstadoMovimiento.choices, default=EstadoMovimiento.BORRADOR)
+    procesado = models.BooleanField(default=False, editable=False)
 
     def clean(self):
         if self.pk:
-            # Obtenemos el objeto tal cual está en la DB antes de guardar los cambios
-            original = type(self).objects.get(pk=self.pk)
+            original = DevolucionSalidaProvisoria.objects.get(pk=self.pk)
             if original.estado == EstadoMovimiento.APROBADO and self.estado != EstadoMovimiento.APROBADO:
-                raise ValidationError(
-                    f"Este movimiento ya fue APROBADO y procesado. "
-                    "No se puede revertir a otro estado por integridad de inventario."
-                )
+                raise ValidationError("Este movimiento ya fue APROBADO.")
         super().clean()
 
     class Meta:
         verbose_name = "Retorno al Depósito"
-        verbose_name_plural = "Retornos al Depósito (Suma Stock)"
+        verbose_name_plural = "Retornos al Depósito"
 
     def __str__(self):
-        return f"Devolución {self.id} (de Salida {self.salida_original.id}) -> {self.deposito_destino.nombre}"
+        return f"Devolución {self.id} (de Salida {self.salida_original.id})"
 
 
 class ItemDevolucionProvisoria(models.Model):
@@ -118,6 +111,8 @@ class ItemDevolucionProvisoria(models.Model):
     item_salida = models.ForeignKey(
         ItemSalidaProvisoria, on_delete=models.PROTECT, related_name="devoluciones_item")
     cantidad_devuelta = models.PositiveIntegerField()
+    procesado = models.BooleanField(default=False, editable=False)
+
 
     class Meta:
         verbose_name = "Ítem de Devolución"

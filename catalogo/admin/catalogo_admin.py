@@ -79,6 +79,9 @@ class ProductoAdmin(SimpleHistoryAdmin):  # <--- Auditoría activada
         return total if total else 0
     total_stock.short_description = 'Stock Total'
 
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(Variante)
 class VarianteAdmin(SimpleHistoryAdmin):  # <--- Auditoría activada
@@ -95,6 +98,9 @@ class VarianteAdmin(SimpleHistoryAdmin):  # <--- Auditoría activada
         'precio_2_reventa', 'precio_3_mayorista',
         'precio_4_intercompany', 'precio_oferta', 'oferta_vence'
     )
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     inlines = [ImagenProductoInline, HistorialCostoInline]
 

@@ -11,3 +11,4 @@ from .consignaciones import (
     DevolucionSalidaProvisoria, ItemDevolucionProvisoria,
     LiquidacionSalidaProvisoria, ItemLiquidacionProvisoria, MotivoLiquidacion
 )
+from .reservas import ReservaStock
